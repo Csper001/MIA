@@ -8,9 +8,10 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Header
 from fastapi.responses import FileResponse, PlainTextResponse
 import stripe
+import httpx
 from openai import AsyncOpenAI
 from PIL import Image, ImageOps
 
@@ -140,6 +141,40 @@ async def create_checkout():
         return {"url": session.url}
     except Exception as exc:
         raise HTTPException(502, "Unable to start sandbox checkout.") from exc
+
+
+# Validate customer tokens against Supabase Auth, never browser-supplied IDs.
+# This is a prerequisite for durable credit accounting, not credit enforcement.
+async def verified_customer(authorization: str | None) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Sign in with your Mia email account.")
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(401, "Missing authentication token.")
+    url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    key = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
+    if not url.startswith("https://") or not key:
+        raise HTTPException(503, "Customer authentication is not configured.")
+    try:
+        async with httpx.AsyncClient(timeout=8) as http:
+            response = await http.get(
+                url + "/auth/v1/user",
+                headers={"apikey": key, "Authorization": "Bearer " + token},
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, "Authentication provider unavailable.") from exc
+    if response.status_code != 200:
+        raise HTTPException(401, "Your sign-in expired. Please sign in again.")
+    user = response.json()
+    if not user.get("id") or not user.get("email_confirmed_at"):
+        raise HTTPException(403, "Verify your email before using Mia.")
+    return {"user_id": user["id"], "email": user.get("email", "")}
+
+
+@app.get("/api/me")
+async def current_customer(authorization: str | None = Header(default=None)):
+    return await verified_customer(authorization)
+
 
 PERSONA = ("You are Mia, a clearly disclosed AI home styling assistant. "
            "Be friendly, candid, specific, budget-conscious, and concise. "
