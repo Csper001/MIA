@@ -1,5 +1,7 @@
 """Mia Home AI — local prototype. Not production hardened."""
 import base64
+import asyncio
+from datetime import datetime, timezone
 import secrets
 import io
 import os
@@ -42,6 +44,67 @@ async def private_beta_access(request, call_next):
     response = await call_next(request)
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+
+# Private-beta cost guards. Counters are per running server process, not a
+# billing guarantee: they reset when Render restarts or scales to more workers.
+# Set a real project budget/alerts in the OpenAI dashboard as a second layer.
+_usage_lock = asyncio.Lock()
+_usage_date = ""
+_usage_counts = {"advice": 0, "makeover": 0}
+_inflight = {"advice": 0, "makeover": 0}
+
+
+def _positive_limit(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return max(0, min(value, 1000))
+
+
+async def reserve_generation(kind: str):
+    """Count attempts before contacting OpenAI; bound simultaneous requests."""
+    global _usage_date
+    today = datetime.now(timezone.utc).date().isoformat()
+    limit = _positive_limit(
+        "MIA_DAILY_MAKEOVER_LIMIT" if kind == "makeover" else "MIA_DAILY_ADVICE_LIMIT",
+        10 if kind == "makeover" else 30,
+    )
+    concurrent_limit = _positive_limit("MIA_MAX_CONCURRENT_REQUESTS", 2)
+    async with _usage_lock:
+        if _usage_date != today:
+            _usage_date = today
+            _usage_counts.update(advice=0, makeover=0)
+        if _usage_counts[kind] >= limit:
+            raise HTTPException(429, "Mia's daily private-beta limit has been reached. Try again tomorrow (UTC).")
+        if sum(_inflight.values()) >= concurrent_limit:
+            raise HTTPException(429, "Mia is busy generating a design. Please try again shortly.")
+        _usage_counts[kind] += 1
+        _inflight[kind] += 1
+
+
+async def release_generation(kind: str):
+    async with _usage_lock:
+        _inflight[kind] = max(0, _inflight[kind] - 1)
+
+
+@app.get("/api/usage")
+async def usage():
+    today = datetime.now(timezone.utc).date().isoformat()
+    async with _usage_lock:
+        counts = _usage_counts.copy() if _usage_date == today else {"advice": 0, "makeover": 0}
+        return {
+            "date_utc": today,
+            "used": counts,
+            "daily_limits": {
+                "advice": _positive_limit("MIA_DAILY_ADVICE_LIMIT", 30),
+                "makeover": _positive_limit("MIA_DAILY_MAKEOVER_LIMIT", 10),
+            },
+            "active_requests": sum(_inflight.values()),
+            "note": "Private-beta per-process counters; reset on server restart. Not a billing cap.",
+        }
 
 
 PERSONA = ("You are Mia, a clearly disclosed AI home styling assistant. "
@@ -93,6 +156,7 @@ async def advice(photo: UploadFile = File(...), request: str = Form("How can I i
     if len(request) > 1500 or len(budget) > 100:
         raise HTTPException(400, "Request too long.")
     buf = await normalized_image(photo)
+    await reserve_generation("advice")
     encoded = base64.b64encode(buf.getvalue()).decode("ascii")
     try:
         result = await client().responses.create(
@@ -107,6 +171,8 @@ async def advice(photo: UploadFile = File(...), request: str = Form("How can I i
         raise
     except Exception as exc:
         raise HTTPException(502, f"AI advice failed: {type(exc).__name__}. Check model access and API billing.") from exc
+    finally:
+        await release_generation("advice")
 
 
 @app.post("/api/makeover")
@@ -115,6 +181,7 @@ async def makeover(photo: UploadFile = File(...), request: str = Form(...),
     if not request.strip() or len(request) > 1500 or len(budget) > 100:
         raise HTTPException(400, "Enter a makeover request (up to 1,500 characters).")
     buf = await normalized_image(photo)
+    await reserve_generation("makeover")
     prompt = (
         "Edit this uploaded photograph into a photorealistic home-design concept. "
         "Preserve camera perspective, original room/building geometry, windows, doors, "
@@ -138,3 +205,5 @@ async def makeover(photo: UploadFile = File(...), request: str = Form(...),
         raise
     except Exception as exc:
         raise HTTPException(502, f"Image generation failed: {type(exc).__name__}. Check model access, billing, and image API parameters.") from exc
+    finally:
+        await release_generation("makeover")
