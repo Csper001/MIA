@@ -32,6 +32,13 @@ async def private_beta_access(request, call_next):
         return PlainTextResponse("Private beta access is not configured.", status_code=503)
     supplied_user = supplied_pass = ""
     auth = request.headers.get("authorization", "")
+    # Browsers cannot send HTTP Basic and Supabase Bearer in the same
+    # Authorization header. Permit Bearer only on endpoints that independently
+    # verify the Supabase token; all other beta routes still require Basic.
+    if request.url.path in ("/api/me", "/api/credits", "/api/makeover") and auth.startswith("Bearer "):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
     if auth.lower().startswith("basic "):
         try:
             raw = base64.b64decode(auth.split(" ", 1)[1], validate=True).decode("utf-8")
