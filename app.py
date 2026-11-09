@@ -176,6 +176,38 @@ async def current_customer(authorization: str | None = Header(default=None)):
     return await verified_customer(authorization)
 
 
+
+# Credit operations are disabled until the server-only Supabase key is installed.
+# Never expose SUPABASE_SECRET_KEY to the website or source control.
+def credit_config():
+    url=os.getenv("SUPABASE_URL","").rstrip("/")
+    key=os.getenv("SUPABASE_SECRET_KEY","")
+    if not url.startswith("https://") or not key:
+        raise HTTPException(503,"Mia credits are not configured yet.")
+    return url,key
+
+async def credit_rpc(name: str, payload: dict):
+    url,key=credit_config()
+    try:
+        async with httpx.AsyncClient(timeout=12) as http:
+            response=await http.post(url+"/rest/v1/rpc/"+name,
+                headers={"apikey":key,"Authorization":"Bearer "+key,
+                         "Content-Type":"application/json"},
+                json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(503,"Credit database unavailable.") from exc
+    if response.status_code >= 400:
+        raise HTTPException(503,"Credit database operation failed.")
+    return response.json()
+
+@app.get("/api/credits")
+async def get_credits(authorization: str | None = Header(default=None)):
+    customer=await verified_customer(authorization)
+    result=await credit_rpc("mia_get_or_create_credits",{"p_user_id":customer["user_id"]})
+    if not isinstance(result,list) or len(result)!=1:
+        raise HTTPException(503,"Unable to load your credits.")
+    return result[0]
+
 PERSONA = ("You are Mia, a clearly disclosed AI home styling assistant. "
            "Be friendly, candid, specific, budget-conscious, and concise. "
            "Explain what works and what to change. Avoid claiming dimensions or materials "
@@ -246,11 +278,16 @@ async def advice(photo: UploadFile = File(...), request: str = Form("How can I i
 
 @app.post("/api/makeover")
 async def makeover(photo: UploadFile = File(...), request: str = Form(...),
-                   budget: str = Form("Not specified")):
+                   budget: str = Form("Not specified"), authorization: str | None = Header(default=None)):
     if not request.strip() or len(request) > 1500 or len(budget) > 100:
         raise HTTPException(400, "Enter a makeover request (up to 1,500 characters).")
+    customer = await verified_customer(authorization)
+    credit_config()  # Fail closed before starting an expensive request.
     buf = await normalized_image(photo)
     await reserve_generation("makeover")
+    request_id = str(__import__("uuid").uuid4())
+    reserved = False
+    success = False
     prompt = (
         "Edit this uploaded photograph into a photorealistic home-design concept. "
         "Preserve camera perspective, original room/building geometry, windows, doors, "
@@ -260,6 +297,12 @@ async def makeover(photo: UploadFile = File(...), request: str = Form(...),
         f"Customer budget: {budget}. Requested change: {request}"
     )
     try:
+        kind = await credit_rpc("mia_reserve_credit", {"p_user_id":customer["user_id"],"p_request_id":request_id})
+        if kind == "insufficient":
+            raise HTTPException(402,"No makeover credits remaining. Additional credits are not available for purchase yet.")
+        if kind not in ("free","paid"):
+            raise HTTPException(503,"Could not reserve a makeover credit.")
+        reserved = True
         result = await client().images.edit(
             model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1.5"),
             image=buf,
@@ -269,10 +312,17 @@ async def makeover(photo: UploadFile = File(...), request: str = Form(...),
         image_b64 = result.data[0].b64_json
         if not image_b64:
             raise ValueError("Image API did not return base64 image data")
+        await credit_rpc("mia_finish_credit",{"p_user_id":customer["user_id"],"p_request_id":request_id,"p_success":True})
+        success = True
         return {"image": f"data:image/png;base64,{image_b64}"}
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(502, f"Image generation failed: {type(exc).__name__}. Check model access, billing, and image API parameters.") from exc
     finally:
+        if reserved and not success:
+            try:
+                await credit_rpc("mia_finish_credit",{"p_user_id":customer["user_id"],"p_request_id":request_id,"p_success":False})
+            except Exception:
+                pass  # Reconcile uncertain outcomes before production launch.
         await release_generation("makeover")
