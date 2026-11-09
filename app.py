@@ -10,6 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
+import stripe
 from openai import AsyncOpenAI
 from PIL import Image, ImageOps
 
@@ -106,6 +107,39 @@ async def usage():
             "note": "Private-beta per-process counters; reset on server restart. Not a billing cap.",
         }
 
+
+
+
+# Sandbox-only checkout preparation. Do not enable paid access until a durable
+# customer ledger and verified Stripe webhooks are implemented.
+STRIPE_SANDBOX_PRICE_ID = "price_1UZxG3Dcs8799WD69ATQjjSD"
+
+
+@app.post("/api/checkout")
+async def create_checkout():
+    secret_key = os.getenv("STRIPE_SECRET_KEY", "")
+    if not secret_key.startswith("sk_test_"):
+        raise HTTPException(503, "Stripe sandbox key is not configured.")
+    if os.getenv("MIA_ENABLE_SANDBOX_CHECKOUT") != "true":
+        raise HTTPException(503, "Sandbox checkout is not enabled.")
+    # No credit issuance on redirect; successful payment must be verified
+    # server-side before granting any credits.
+    origin = os.getenv("MIA_PUBLIC_URL", "").rstrip("/")
+    if not origin.startswith("https://"):
+        raise HTTPException(503, "MIA_PUBLIC_URL must be an HTTPS URL.")
+    try:
+        session = await asyncio.to_thread(
+            stripe.checkout.Session.create,
+            api_key=secret_key,
+            mode="payment",
+            line_items=[{"price": STRIPE_SANDBOX_PRICE_ID, "quantity": 1}],
+            success_url=origin + "/?checkout=success",
+            cancel_url=origin + "/?checkout=cancel",
+            metadata={"pack": "three_makeovers", "environment": "sandbox"},
+        )
+        return {"url": session.url}
+    except Exception as exc:
+        raise HTTPException(502, "Unable to start sandbox checkout.") from exc
 
 PERSONA = ("You are Mia, a clearly disclosed AI home styling assistant. "
            "Be friendly, candid, specific, budget-conscious, and concise. "
