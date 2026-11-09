@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Header
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Header, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 import stripe
 import httpx
@@ -35,7 +35,11 @@ async def private_beta_access(request, call_next):
     # Browsers cannot send HTTP Basic and Supabase Bearer in the same
     # Authorization header. Permit Bearer only on endpoints that independently
     # verify the Supabase token; all other beta routes still require Basic.
-    if request.url.path in ("/api/me", "/api/credits", "/api/makeover") and auth.startswith("Bearer "):
+    if request.url.path == "/api/stripe/webhook":
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    if request.url.path in ("/api/me", "/api/credits", "/api/makeover", "/api/checkout") and auth.startswith("Bearer "):
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         return response
@@ -118,36 +122,89 @@ async def usage():
 
 
 
-# Sandbox-only checkout preparation. Do not enable paid access until a durable
-# customer ledger and verified Stripe webhooks are implemented.
+# Sandbox checkout is fail-closed until explicitly enabled and a webhook secret exists.
 STRIPE_SANDBOX_PRICE_ID = "price_1UZxG3Dcs8799WD69ATQjjSD"
 
+def sandbox_ready():
+    return (os.getenv("MIA_ENABLE_SANDBOX_CHECKOUT") == "true"
+            and os.getenv("STRIPE_SECRET_KEY", "").startswith("sk_test_")
+            and os.getenv("STRIPE_WEBHOOK_SECRET", "").startswith("whsec_")
+            and os.getenv("MIA_PUBLIC_URL", "").startswith("https://")
+            and bool(os.getenv("SUPABASE_SECRET_KEY")))
+
+@app.get("/api/checkout/status")
+async def checkout_status():
+    return {"sandbox_enabled": sandbox_ready(), "live_enabled": False}
 
 @app.post("/api/checkout")
-async def create_checkout():
-    secret_key = os.getenv("STRIPE_SECRET_KEY", "")
-    if not secret_key.startswith("sk_test_"):
-        raise HTTPException(503, "Stripe sandbox key is not configured.")
-    if os.getenv("MIA_ENABLE_SANDBOX_CHECKOUT") != "true":
+async def create_checkout(authorization: str | None = Header(default=None)):
+    customer = await verified_customer(authorization)
+    if not sandbox_ready():
         raise HTTPException(503, "Sandbox checkout is not enabled.")
-    # No credit issuance on redirect; successful payment must be verified
-    # server-side before granting any credits.
     origin = os.getenv("MIA_PUBLIC_URL", "").rstrip("/")
-    if not origin.startswith("https://"):
-        raise HTTPException(503, "MIA_PUBLIC_URL must be an HTTPS URL.")
     try:
         session = await asyncio.to_thread(
             stripe.checkout.Session.create,
-            api_key=secret_key,
+            api_key=os.environ["STRIPE_SECRET_KEY"],
             mode="payment",
+            client_reference_id=customer["user_id"],
+            customer_email=customer["email"],
             line_items=[{"price": STRIPE_SANDBOX_PRICE_ID, "quantity": 1}],
             success_url=origin + "/?checkout=success",
             cancel_url=origin + "/?checkout=cancel",
-            metadata={"pack": "three_makeovers", "environment": "sandbox"},
+            metadata={"pack": "three_makeovers", "environment": "sandbox",
+                      "user_id": customer["user_id"]},
         )
         return {"url": session.url}
     except Exception as exc:
         raise HTTPException(502, "Unable to start sandbox checkout.") from exc
+
+
+@app.post("/api/stripe/webhook")
+async def stripe_webhook(request: Request):
+    # Raw body and signature are required. Browser redirects never grant credits.
+    if not sandbox_ready():
+        raise HTTPException(503, "Sandbox webhook is not enabled.")
+    payload = await request.body()
+    if len(payload) > 100_000:
+        raise HTTPException(413, "Webhook payload too large.")
+    signature = request.headers.get("stripe-signature", "")
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, signature, os.environ["STRIPE_WEBHOOK_SECRET"])
+    except (ValueError, stripe.error.SignatureVerificationError) as exc:
+        raise HTTPException(400, "Invalid Stripe webhook.") from exc
+    if event["type"] != "checkout.session.completed":
+        return {"received": True}
+    session = event["data"]["object"]
+    user_id = session.get("client_reference_id")
+    metadata = session.get("metadata") or {}
+    if (session.get("livemode") is not False
+            or session.get("mode") != "payment"
+            or session.get("payment_status") != "paid"
+            or session.get("currency") != "usd"
+            or session.get("amount_total") != 500
+            or metadata.get("pack") != "three_makeovers"
+            or metadata.get("environment") != "sandbox"
+            or not user_id or metadata.get("user_id") != user_id):
+        raise HTTPException(400, "Checkout session does not match the credit pack.")
+    # Independently retrieve the purchased line item from Stripe.
+    try:
+        lines = await asyncio.to_thread(
+            stripe.checkout.Session.list_line_items, session["id"],
+            api_key=os.environ["STRIPE_SECRET_KEY"], limit=10)
+    except Exception as exc:
+        raise HTTPException(503, "Unable to verify Stripe line items.") from exc
+    items = lines.get("data", [])
+    if (lines.get("has_more") or len(items) != 1
+            or items[0].get("price", {}).get("id") != STRIPE_SANDBOX_PRICE_ID
+            or items[0].get("quantity") != 1):
+        raise HTTPException(400, "Unexpected Stripe purchase.")
+    granted = await credit_rpc("mia_grant_purchase", {
+        "p_user_id": user_id,
+        "p_session_id": session["id"],
+        "p_event_id": event["id"]})
+    return {"received": True, "credits_granted": bool(granted)}
 
 
 # Validate customer tokens against Supabase Auth, never browser-supplied IDs.
