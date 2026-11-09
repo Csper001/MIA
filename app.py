@@ -1,18 +1,48 @@
 """Mia Home AI — local prototype. Not production hardened."""
 import base64
+import secrets
 import io
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from openai import AsyncOpenAI
 from PIL import Image, ImageOps
 
 load_dotenv()
 ROOT = Path(__file__).parent
-app = FastAPI(title="Mia Home AI")
+app = FastAPI(title="Mia Home AI", docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.middleware("http")
+async def private_beta_access(request, call_next):
+    """Protect every endpoint, including the API, with browser HTTP Basic auth.
+
+    Fail closed until MIA_ACCESS_PASSWORD is configured in Render.
+    """
+    password = os.getenv("MIA_ACCESS_PASSWORD", "")
+    username = os.getenv("MIA_ACCESS_USER", "mia")
+    if len(password) < 16:
+        return PlainTextResponse("Private beta access is not configured.", status_code=503)
+    supplied_user = supplied_pass = ""
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("basic "):
+        try:
+            raw = base64.b64decode(auth.split(" ", 1)[1], validate=True).decode("utf-8")
+            supplied_user, supplied_pass = raw.split(":", 1)
+        except (ValueError, UnicodeDecodeError):
+            pass
+    if not (secrets.compare_digest(supplied_user, username) and
+            secrets.compare_digest(supplied_pass, password)):
+        return PlainTextResponse("Mia private beta — sign in required.", status_code=401,
+                                 headers={"WWW-Authenticate": 'Basic realm="Mia Private Beta"',
+                                          "Cache-Control": "no-store"})
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 PERSONA = ("You are Mia, a clearly disclosed AI home styling assistant. "
            "Be friendly, candid, specific, budget-conscious, and concise. "
