@@ -4,3 +4,4 @@ python-multipart>=0.0.9,<1
 openai>=1.75,<3
 pillow>=10,<13
 python-dotenv>=1,<2
+stripe>=11,<15
