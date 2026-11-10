@@ -94,10 +94,22 @@ header{margin-bottom:20px}
 .mia-artwork-hero{width:100%;margin:0 0 22px;padding:0;overflow:hidden;border-radius:20px;background:#f4f0e8}
 .mia-artwork-hero img{display:block;width:100%;height:auto;max-width:100%;object-fit:contain}
 @media(max-width:680px){.mia-artwork-hero{border-radius:16px;margin-bottom:18px}}
+
+/* Private saved-makeover thumbnail gallery */
+#historyList{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px;white-space:normal}
+#historyList .gallery-tile{display:block;min-width:0;min-height:0;padding:0;text-align:left;overflow:hidden;border:1px solid #e3e7de;border-radius:17px;background:#fff;color:#2b4435;box-shadow:0 5px 18px #243b2b0d}
+#historyList .gallery-thumb{display:flex;align-items:center;justify-content:center;aspect-ratio:4/3;background:#eef0e9;overflow:hidden}
+#historyList .gallery-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+#historyList .gallery-placeholder{font-size:12px;color:#68776a;padding:12px;text-align:center}
+#historyList .gallery-meta{padding:12px 13px;display:flex;flex-direction:column;gap:3px}
+#historyList .gallery-meta strong{font-size:14px;font-weight:700}
+#historyList .gallery-meta span{font-size:12px;color:#738073}
+#historyList .gallery-tile:focus-visible{outline:3px solid #688b70;outline-offset:3px}
+@media(max-width:680px){#historyList{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}#historyList .gallery-meta{padding:10px}}
 </style></head><body><div class="wrap"><header><div class="logo">✳ Mia Home AI</div></header><section class="mia-artwork-hero" aria-label="Mia Home AI design assistant"><img src="/static/8328D9E7-F34F-42CA-B931-F9C9A7C1FEB5.png" alt="Mia Home AI: Imagine home, beautifully. Meet Mia with blueprints and color swatches, then upload a photo, describe your vision, and see the possibilities." decoding="async"></section>
 <section class="card" id="accountCard"><h2>Your Mia account</h2><p>Sign in with your email to get ready for your free makeover. No password needed.</p><div id="signedOut"><label for="accountEmail">Email address</label><input id="accountEmail" type="email" autocomplete="email" placeholder="you@example.com"><div class="actions"><button type="button" id="sendLink">Email me a sign-in link</button></div></div><div id="signedIn" hidden><p>Signed in as <strong id="accountIdentity"></strong></p><p id="creditBalance" role="status" aria-live="polite">Checking your makeover credits…</p><button type="button" id="buyCredits" hidden>Buy 3 makeovers for $5 (Stripe test)</button><p id="checkoutMessage" class="hint" role="status"></p><button type="button" class="secondary" id="signOut">Sign out</button></div><p id="authStatus" role="status" aria-live="polite" class="status"></p><p class="hint">Mia is in private beta. Stripe checkout is currently in test mode; no real charges are made.</p></section>
 <section class="card"><h2>Start with a photo</h2><label for="photo">Your room, exterior, or yard</label><input id="photo" type="file" accept="image/jpeg,image/png,image/webp" capture="environment"><img id="preview" class="preview" alt="Your uploaded photo"><label for="request">What would you like to change?</label><textarea id="request" maxlength="1500" placeholder="Keep my kitchen cabinets, but show a warmer backsplash and brass hardware."></textarea><div class="prompt-examples"><button type="button" data-prompt="Keep my existing layout and windows. Show a warm, modern kitchen with natural wood accents.">Warm kitchen</button><button type="button" data-prompt="Keep the house shape and roofline. Show a welcoming exterior with updated siding, trim, and landscaping.">Exterior refresh</button><button type="button" data-prompt="Keep the room dimensions and furniture placement. Show a cozy living room with softer colors and layered lighting.">Cozy living room</button></div><label for="budget">Approximate budget</label><select id="budget"><option>Not specified</option><option>Under $500</option><option>$500–$2,000</option><option>$2,000–$10,000</option><option>$10,000+</option></select><div class="actions"><button id="advice" hidden aria-hidden="true" tabindex="-1">Ask Mia for advice</button><button id="makeover" class="secondary">Generate My Makeover · 1 Credit</button></div><p class="hint" style="font-weight:600;color:#42614d">Each generated image uses 1 credit. New verified accounts get 1 free makeover.</p><p id="status" class="status" role="status" aria-live="polite"></p><p id="usageNote" aria-live="polite"></p><p class="hint">Your photo is sent to an AI provider to process your request. Don't upload private or sensitive images. Visual concepts may change details unintentionally and are not construction plans.</p></section>
-<section class="card" id="historyCard" hidden><h2>Saved makeovers</h2><p class="hint">Your recent makeovers are stored privately. Select one to reopen it.</p><div id="historyList" class="output">Loading…</div></section><div class="results"><section class="card result" hidden><h2>Mia's advice</h2><div id="adviceOutput" class="output">Your personalized suggestions will appear here.</div></section><section class="card result"><h2>Your makeover</h2><div id="imageOutput" class="output">Your generated concept will appear here.</div><div class="actions" id="downloadArea" hidden><a id="download" download="mia-makeover.png">Download concept</a></div></section></div><footer>Private beta • Mia is an AI assistant, not a licensed designer • Images are conceptual only</footer></div>
+<section class="card" id="historyCard" hidden><h2>Saved makeovers</h2><p class="hint">Your designs are saved privately. Tap any image to reopen it at full size and download it.</p><div id="historyList" class="output">Loading…</div></section><div class="results"><section class="card result" hidden><h2>Mia's advice</h2><div id="adviceOutput" class="output">Your personalized suggestions will appear here.</div></section><section class="card result"><h2>Your makeover</h2><div id="imageOutput" class="output">Your generated concept will appear here.</div><div class="actions" id="downloadArea" hidden><a id="download" download="mia-makeover.png">Download concept</a></div></section></div><footer>Private beta • Mia is an AI assistant, not a licensed designer • Images are conceptual only</footer></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
 const SUPABASE_URL='https://tmyuhplzbjxpwkatxrpp.supabase.co';
@@ -122,34 +134,66 @@ async function refreshCredits(session){
   el.textContent='Free makeovers: '+data.free_credits+' · Purchased makeovers: '+data.paid_credits;
  }catch(e){if(sequence===creditCheckSequence)el.textContent='Credit balance unavailable right now. '+e.message}
 }
+let galleryImageUrls=[];
+let galleryRefreshToken=0;
+function clearGalleryImages(){
+ for(const url of galleryImageUrls)URL.revokeObjectURL(url);
+ galleryImageUrls=[];
+}
 async function refreshHistory(session){
  const card=document.getElementById('historyCard'),list=document.getElementById('historyList');
+ const token=++galleryRefreshToken;
+ clearGalleryImages();
  card.hidden=!session?.access_token;
- if(!session?.access_token){list.textContent='';return}
+ if(!session?.access_token){list.replaceChildren();return}
+ list.textContent='Loading your saved designs…';
  try{
   const r=await fetch('/api/makeovers',{headers:{Authorization:'Bearer '+session.access_token}});
   if(!r.ok)throw Error('History unavailable');
-  const data=await r.json();list.replaceChildren();
+  const data=await r.json();
+  if(token!==galleryRefreshToken)return;
+  list.replaceChildren();
   if(!data.makeovers?.length){list.textContent='Your completed makeovers will appear here.';return}
-  for(const item of data.makeovers){
-   const b=document.createElement('button');b.className='secondary';b.style.margin='5px';
-   b.textContent='Open makeover · '+new Date(item.created_at).toLocaleDateString();
-   b.onclick=async()=>{
-    b.disabled=true;
-    try{
-     const {data:{session:current}}=await supabaseClient.auth.getSession();
-     if(!current?.access_token)throw Error('Sign in again.');
-     const response=await fetch('/api/makeovers/'+encodeURIComponent(item.request_id),{headers:{Authorization:'Bearer '+current.access_token}});
-     if(!response.ok)throw Error('Could not load saved image.');
-     const imageUrl=URL.createObjectURL(await response.blob());
-     const output=document.getElementById('imageOutput');output.replaceChildren();
-     const img=document.createElement('img');img.src=imageUrl;img.alt='Saved Mia makeover';output.append(img);
-     document.getElementById('download').href=imageUrl;document.getElementById('downloadArea').hidden=false;
-     output.scrollIntoView({behavior:'smooth',block:'center'});
-    }catch(e){document.getElementById('status').textContent=e.message}finally{b.disabled=false}
-   };list.append(b)
+  const items=data.makeovers;
+  for(const item of items){
+   const tile=document.createElement('button');
+   tile.type='button';tile.className='gallery-tile';
+   tile.setAttribute('aria-label','Open saved makeover from '+new Date(item.created_at).toLocaleDateString());
+   const thumb=document.createElement('div');thumb.className='gallery-thumb';
+   const placeholder=document.createElement('span');placeholder.className='gallery-placeholder';placeholder.textContent='Loading image…';thumb.append(placeholder);
+   const meta=document.createElement('div');meta.className='gallery-meta';
+   const name=document.createElement('strong');name.textContent='My makeover';
+   const date=document.createElement('span');date.textContent=new Date(item.created_at).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+   meta.append(name,date);tile.append(thumb,meta);list.append(tile);
+   tile.onclick=()=>{
+    if(!tile.dataset.imageUrl)return;
+    const output=document.getElementById('imageOutput');output.replaceChildren();
+    const img=document.createElement('img');img.src=tile.dataset.imageUrl;img.alt='Saved Mia makeover';output.append(img);
+    document.getElementById('download').href=tile.dataset.imageUrl;
+    document.getElementById('downloadArea').hidden=false;
+    output.scrollIntoView({behavior:'smooth',block:'center'});
+   };
   }
- }catch(e){list.textContent='Saved makeover history is temporarily unavailable.'}
+  // Fetch only a few thumbnails concurrently to avoid overwhelming mobile browsers.
+  let next=0;
+  const workers=Array.from({length:Math.min(3,items.length)},async()=>{
+   while(next<items.length && token===galleryRefreshToken){
+    const i=next++,item=items[i],tile=list.children[i];
+    try{
+     const response=await fetch('/api/makeovers/'+encodeURIComponent(item.request_id),{headers:{Authorization:'Bearer '+session.access_token}});
+     if(!response.ok)throw Error('Image unavailable');
+     const imageUrl=URL.createObjectURL(await response.blob());
+     if(token!==galleryRefreshToken){URL.revokeObjectURL(imageUrl);return}
+     galleryImageUrls.push(imageUrl);
+     tile.dataset.imageUrl=imageUrl;
+     const thumb=tile.querySelector('.gallery-thumb');
+     const img=document.createElement('img');img.src=imageUrl;img.alt='';img.loading='lazy';
+     thumb.replaceChildren(img);
+    }catch(e){if(token===galleryRefreshToken)tile.querySelector('.gallery-placeholder').textContent='Preview unavailable'}
+   }
+  });
+  await Promise.all(workers);
+ }catch(e){if(token===galleryRefreshToken)list.textContent='Saved makeover history is temporarily unavailable.'}
 }
 function showSession(session){const user=session?.user;document.getElementById('signedIn').hidden=!user;document.getElementById('signedOut').hidden=!!user;document.getElementById('accountIdentity').textContent=user?.email||'';refreshCredits(session);refreshHistory(session)}
 if(supabaseClient){
