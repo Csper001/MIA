@@ -266,6 +266,68 @@ async def credit_rpc(name: str, payload: dict):
         raise HTTPException(503,"Credit database operation failed.")
     return response.json()
 
+async def storage_request(method: str, path: str, *, content: bytes | None = None, content_type: str | None = None):
+    url, key = credit_config()
+    headers = {"apikey": key, "Authorization": "Bearer " + key}
+    if content_type:
+        headers["Content-Type"] = content_type
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            response = await http.request(method, url + path, headers=headers, content=content)
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, "Saved makeover storage is unavailable.") from exc
+    if response.status_code >= 400:
+        logger.error("Storage request failed status=%s path=%s", response.status_code, path.split("?")[0])
+        raise HTTPException(503, "Could not save or retrieve your makeover.")
+    return response
+
+
+@app.get("/api/makeovers")
+async def saved_makeovers(authorization: str | None = Header(default=None)):
+    customer = await verified_customer(authorization)
+    url, key = credit_config()
+    try:
+        async with httpx.AsyncClient(timeout=12) as http:
+            response = await http.get(url + "/rest/v1/mia_saved_makeovers",
+                params={"user_id": "eq." + customer["user_id"],
+                        "select": "request_id,created_at", "order": "created_at.desc", "limit": "20"},
+                headers={"apikey": key, "Authorization": "Bearer " + key})
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, "Makeover history unavailable.") from exc
+    if response.status_code >= 400:
+        raise HTTPException(503, "Makeover history unavailable.")
+    return {"makeovers": response.json()}
+
+
+@app.get("/api/makeovers/{request_id}")
+async def saved_makeover_image(request_id: str, authorization: str | None = Header(default=None)):
+    import uuid
+    try:
+        parsed_id = str(uuid.UUID(request_id))
+    except ValueError:
+        raise HTTPException(400, "Invalid makeover ID.")
+    customer = await verified_customer(authorization)
+    url, key = credit_config()
+    try:
+        async with httpx.AsyncClient(timeout=12) as http:
+            response = await http.get(url + "/rest/v1/mia_saved_makeovers",
+                params={"request_id": "eq." + parsed_id, "user_id": "eq." + customer["user_id"],
+                        "select": "storage_path", "limit": "1"},
+                headers={"apikey": key, "Authorization": "Bearer " + key})
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, "Makeover history unavailable.") from exc
+    if response.status_code >= 400:
+        raise HTTPException(503, "Makeover history unavailable.")
+    rows = response.json()
+    if not rows:
+        raise HTTPException(404, "Saved makeover not found.")
+    from fastapi.responses import Response
+    path = rows[0]["storage_path"]
+    image = await storage_request("GET", "/storage/v1/object/mia-makeovers/" + path)
+    return Response(content=image.content, media_type="image/png",
+                    headers={"Cache-Control": "private, no-store"})
+
+
 @app.get("/api/credits")
 async def get_credits(authorization: str | None = Header(default=None)):
     customer=await verified_customer(authorization)
@@ -378,11 +440,28 @@ async def makeover(photo: UploadFile = File(...), request: str = Form(...),
         image_b64 = result.data[0].b64_json
         if not image_b64:
             raise ValueError("Image API did not return base64 image data")
+        # Persist the generated result before charging the reserved credit.
+        image_bytes = base64.b64decode(image_b64, validate=True)
+        if len(image_bytes) > 10 * 1024 * 1024:
+            raise HTTPException(502, "Generated image exceeds the storage limit.")
+        storage_path = customer["user_id"] + "/" + request_id + ".png"
+        await storage_request("POST", "/storage/v1/object/mia-makeovers/" + storage_path,
+                              content=image_bytes, content_type="image/png")
+        url, key = credit_config()
+        async with httpx.AsyncClient(timeout=12) as http:
+            recorded = await http.post(url + "/rest/v1/mia_saved_makeovers",
+                headers={"apikey": key, "Authorization": "Bearer " + key,
+                         "Content-Type": "application/json", "Prefer": "return=minimal"},
+                json={"request_id": request_id, "user_id": customer["user_id"],
+                      "storage_path": storage_path})
+        if recorded.status_code >= 400:
+            logger.error("Failed to record saved makeover request_id=%s status=%s", request_id, recorded.status_code)
+            raise HTTPException(503, "Could not record saved makeover; credit will be refunded.")
         finished = await credit_rpc("mia_finish_credit",{"p_user_id":customer["user_id"],"p_request_id":request_id,"p_success":True})
         if finished is not True:
             raise HTTPException(503, "Could not finalize makeover credit. Please contact support before retrying.")
         success = True
-        return {"image": f"data:image/png;base64,{image_b64}"}
+        return {"image": f"data:image/png;base64,{image_b64}", "request_id": request_id}
     except HTTPException:
         raise
     except Exception as exc:
