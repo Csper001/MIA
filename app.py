@@ -21,6 +21,11 @@ ROOT = Path(__file__).parent
 app = FastAPI(title="Mia Home AI", docs_url=None, redoc_url=None, openapi_url=None)
 logger = logging.getLogger("mia.credits")
 
+@app.get("/static/mia-mascot.jpg", include_in_schema=False)
+async def mia_mascot_image():
+    return FileResponse(ROOT / "static" / "mia-mascot.jpg", media_type="image/jpeg")
+
+
 
 @app.middleware("http")
 async def private_beta_access(request, call_next):
