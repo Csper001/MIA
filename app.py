@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 import secrets
 import io
+import logging
 import os
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from PIL import Image, ImageOps
 load_dotenv()
 ROOT = Path(__file__).parent
 app = FastAPI(title="Mia Home AI", docs_url=None, redoc_url=None, openapi_url=None)
+logger = logging.getLogger("mia.credits")
 
 
 @app.middleware("http")
@@ -363,7 +365,7 @@ async def makeover(photo: UploadFile = File(...), request: str = Form(...),
     try:
         kind = await credit_rpc("mia_reserve_credit", {"p_user_id":customer["user_id"],"p_request_id":request_id})
         if kind == "insufficient":
-            raise HTTPException(402,"No makeover credits remaining. Additional credits are not available for purchase yet.")
+            raise HTTPException(402,"No makeover credits remaining. Buy three more credits to continue.")
         if kind not in ("free","paid"):
             raise HTTPException(503,"Could not reserve a makeover credit.")
         reserved = True
@@ -376,7 +378,9 @@ async def makeover(photo: UploadFile = File(...), request: str = Form(...),
         image_b64 = result.data[0].b64_json
         if not image_b64:
             raise ValueError("Image API did not return base64 image data")
-        await credit_rpc("mia_finish_credit",{"p_user_id":customer["user_id"],"p_request_id":request_id,"p_success":True})
+        finished = await credit_rpc("mia_finish_credit",{"p_user_id":customer["user_id"],"p_request_id":request_id,"p_success":True})
+        if finished is not True:
+            raise HTTPException(503, "Could not finalize makeover credit. Please contact support before retrying.")
         success = True
         return {"image": f"data:image/png;base64,{image_b64}"}
     except HTTPException:
@@ -384,9 +388,23 @@ async def makeover(photo: UploadFile = File(...), request: str = Form(...),
     except Exception as exc:
         raise HTTPException(502, f"Image generation failed: {type(exc).__name__}. Check model access, billing, and image API parameters.") from exc
     finally:
-        if reserved and not success:
-            try:
-                await credit_rpc("mia_finish_credit",{"p_user_id":customer["user_id"],"p_request_id":request_id,"p_success":False})
-            except Exception:
-                pass  # Reconcile uncertain outcomes before production launch.
-        await release_generation("makeover")
+        # Keep refund cleanup running even if Safari disconnects mid-request.
+        async def cleanup():
+            if reserved and not success:
+                try:
+                    refunded = await credit_rpc("mia_finish_credit", {
+                        "p_user_id": customer["user_id"],
+                        "p_request_id": request_id,
+                        "p_success": False,
+                    })
+                    if refunded is not True:
+                        logger.error("Credit refund not confirmed request_id=%s", request_id)
+                except Exception:
+                    logger.exception("Credit refund failed request_id=%s", request_id)
+            await release_generation("makeover")
+
+        cleanup_task = asyncio.create_task(cleanup())
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            logger.warning("Client disconnected; credit cleanup continues request_id=%s", request_id)
