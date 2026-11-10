@@ -392,6 +392,11 @@ async def home():
     return FileResponse(ROOT / "static" / "index.html")
 
 
+@app.get("/legal", include_in_schema=False)
+async def legal_pages():
+    return FileResponse(ROOT / "static" / "legal.html")
+
+
 @app.get("/health")
 async def health():
     return {"ok": True, "api_configured": bool(os.getenv("OPENAI_API_KEY"))}
