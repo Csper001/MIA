@@ -41,7 +41,7 @@ async def private_beta_access(request, call_next):
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         return response
-    if request.url.path in ("/api/me", "/api/credits", "/api/makeover", "/api/checkout") and auth.startswith("Bearer "):
+    if (request.url.path in ("/api/me", "/api/credits", "/api/makeover", "/api/checkout") or request.url.path.startswith("/api/makeovers")) and auth.startswith("Bearer "):
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         return response
