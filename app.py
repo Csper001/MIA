@@ -21,6 +21,11 @@ ROOT = Path(__file__).parent
 app = FastAPI(title="Mia Home AI", docs_url=None, redoc_url=None, openapi_url=None)
 logger = logging.getLogger("mia.credits")
 
+@app.get("/static/8328D9E7-F34F-42CA-B931-F9C9A7C1FEB5.png", include_in_schema=False)
+async def mia_mascot_high_res():
+    return FileResponse(ROOT / "static" / "8328D9E7-F34F-42CA-B931-F9C9A7C1FEB5.png", media_type="image/png")
+
+
 @app.get("/static/mia-mascot.jpg", include_in_schema=False)
 async def mia_mascot_image():
     return FileResponse(ROOT / "static" / "mia-mascot.jpg", media_type="image/jpeg")
