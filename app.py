@@ -331,6 +331,14 @@ async def saved_makeover_image(request_id: str, authorization: str | None = Head
 @app.get("/api/credits")
 async def get_credits(authorization: str | None = Header(default=None)):
     customer=await verified_customer(authorization)
+    # Repair old reservations after interrupted requests or server restarts.
+    # The database only touches requests older than 30 minutes and is idempotent.
+    try:
+        repaired = await credit_rpc("mia_reconcile_stale_credits",{"p_user_id":customer["user_id"]})
+        if repaired:
+            logger.warning("Reconciled %s stale makeover reservations for user=%s", repaired, customer["user_id"])
+    except Exception:
+        logger.exception("Stale credit reconciliation failed")
     result=await credit_rpc("mia_get_or_create_credits",{"p_user_id":customer["user_id"]})
     if not isinstance(result,list) or len(result)!=1:
         raise HTTPException(503,"Unable to load your credits.")
