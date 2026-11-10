@@ -33,43 +33,12 @@ async def mia_mascot_image():
 
 
 @app.middleware("http")
-async def private_beta_access(request, call_next):
-    """Protect every endpoint, including the API, with browser HTTP Basic auth.
-
-    Fail closed until MIA_ACCESS_PASSWORD is configured in Render.
-    """
-    password = os.getenv("MIA_ACCESS_PASSWORD", "")
-    username = os.getenv("MIA_ACCESS_USER", "mia")
-    if len(password) < 16:
-        return PlainTextResponse("Private beta access is not configured.", status_code=503)
-    supplied_user = supplied_pass = ""
-    auth = request.headers.get("authorization", "")
-    # Browsers cannot send HTTP Basic and Supabase Bearer in the same
-    # Authorization header. Permit Bearer only on endpoints that independently
-    # verify the Supabase token; all other beta routes still require Basic.
-    if request.url.path == "/api/stripe/webhook":
-        response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
-        return response
-    if (request.url.path in ("/api/me", "/api/credits", "/api/makeover", "/api/checkout") or request.url.path.startswith("/api/makeovers")) and auth.startswith("Bearer "):
-        response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
-        return response
-    if auth.lower().startswith("basic "):
-        try:
-            raw = base64.b64decode(auth.split(" ", 1)[1], validate=True).decode("utf-8")
-            supplied_user, supplied_pass = raw.split(":", 1)
-        except (ValueError, UnicodeDecodeError):
-            pass
-    if not (secrets.compare_digest(supplied_user, username) and
-            secrets.compare_digest(supplied_pass, password)):
-        return PlainTextResponse("Mia private beta — sign in required.", status_code=401,
-                                 headers={"WWW-Authenticate": 'Basic realm="Mia Private Beta"',
-                                          "Cache-Control": "no-store"})
+async def public_beta_headers(request, call_next):
+    """Public beta: individual API endpoints enforce Supabase authentication."""
     response = await call_next(request)
-    response.headers["Cache-Control"] = "no-store"
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
     return response
-
 
 
 # Private-beta cost guards. Counters are per running server process, not a
@@ -138,7 +107,7 @@ async def usage():
 STRIPE_SANDBOX_PRICE_ID = "price_1UZxG3Dcs8799WD69ATQjjSD"
 
 def sandbox_ready():
-    return (os.getenv("MIA_ENABLE_SANDBOX_CHECKOUT") == "true"
+    return (os.getenv("MIA_ENABLE_SANDBOX_CHECKOUT") == "true"\n            and os.getenv("MIA_PUBLIC_BETA", "true").lower() != "true"
             and os.getenv("STRIPE_SECRET_KEY", "").startswith("sk_test_")
             and os.getenv("STRIPE_WEBHOOK_SECRET", "").startswith("whsec_")
             and os.getenv("MIA_PUBLIC_URL", "").startswith("https://")
