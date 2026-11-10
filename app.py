@@ -107,7 +107,8 @@ async def usage():
 STRIPE_SANDBOX_PRICE_ID = "price_1UZxG3Dcs8799WD69ATQjjSD"
 
 def sandbox_ready():
-    return (os.getenv("MIA_ENABLE_SANDBOX_CHECKOUT") == "true"\n            and os.getenv("MIA_PUBLIC_BETA", "true").lower() != "true"
+    return (os.getenv("MIA_ENABLE_SANDBOX_CHECKOUT") == "true"
+            and os.getenv("MIA_PUBLIC_BETA", "true").lower() != "true"
             and os.getenv("STRIPE_SECRET_KEY", "").startswith("sk_test_")
             and os.getenv("STRIPE_WEBHOOK_SECRET", "").startswith("whsec_")
             and os.getenv("MIA_PUBLIC_URL", "").startswith("https://")
