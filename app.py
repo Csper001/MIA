@@ -362,6 +362,35 @@ async def home():
     return FileResponse(ROOT / "static" / "index.html")
 
 
+@app.post("/api/analytics", include_in_schema=False)
+async def analytics(request: Request):
+    # Optional, first-party analytics; never block the customer workflow.
+    import uuid
+    try:
+        if request.headers.get("origin") not in ("https://miahomeai.com", "https://www.miahomeai.com"):
+            return {"ok": False}
+        if int(request.headers.get("content-length", "0")) > 512:
+            return {"ok": False}
+        body = await request.body()
+        if len(body) > 512:
+            return {"ok": False}
+        data = await request.json()
+        browser = str(uuid.UUID(data["browser_id"]))
+        event = data["event"]
+        source = data["source"]
+        if event not in ("visit", "signin_attempt", "link_sent") or source not in ("direct", "pinterest", "instagram", "facebook", "search", "other"):
+            return {"ok": False}
+        url, key = credit_config()
+        async with httpx.AsyncClient(timeout=4) as http:
+            result = await http.post(url + "/rest/v1/mia_analytics_daily",
+                headers={"apikey": key, "Authorization": "Bearer " + key,
+                         "Prefer": "resolution=ignore-duplicates,return=minimal"},
+                json={"browser_id": browser, "event": event, "source": source})
+        return {"ok": result.status_code < 300}
+    except Exception:
+        return {"ok": False}
+
+
 @app.get("/legal", include_in_schema=False)
 async def legal_pages():
     return FileResponse(ROOT / "static" / "legal.html")
